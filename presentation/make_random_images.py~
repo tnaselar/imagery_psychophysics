@@ -1,0 +1,25 @@
+from PIL import Image
+from numpy import random
+
+im = Image.open('/Data/Pictures/google/Andreas+Gursky/png/googleimage426.png')
+
+THRESH = 128
+rand_matrix = random.randint(0, 255, (500, 500, 3)).astype('uint8')
+rand_pic = Image.fromarray(rand_matrix)
+
+
+
+
+for ii in range(500):
+  for jj in range(500):
+    coor = tuple(map(int, [ii,jj]))
+    if sum(rand_pic.getpixel(coor)) < 3*THRESH:
+      continue
+    else:
+      rand_pic.putpixel(coor, im.getpixel(coor)) 
+
+#for val,coor in enumerate(rand_pic.getdata()):
+  #if val < THRESH:
+    #continue
+  #else:
+    #im.putpixel(
