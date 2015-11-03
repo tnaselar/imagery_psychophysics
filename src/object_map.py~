@@ -28,12 +28,8 @@ def com(pts):
 	
 
 	
-##TODO: need to make a new class of binary matrices with "pull", "append", and "remove" methods attached to it...
-##TODO: read in a bunch of images, immediately thumbnail them, convert to an object_map, format_as_cols, concatenate to matrix
-##TODO: methods: "remove":removes pixels and all null objects.
-##TODO: methods: "unique": ratio of unique to total number of objects
 
-##TODO: So it goes
+##So it goes
 #(1) create dead leaves by calling "map_as_cols" in the __init__method of "dead_leaves"
 #(2) spawn an object_map (this should also use "map_as_cols" object)
 #(3) break off the map_as_cols objects and pass to object map prior
@@ -66,6 +62,7 @@ class dead_leaves_prior(object):
     return normalization_constant*prob
 
 
+##the basic 
 class binarized_object_map(object):
   def __init__(self, data):
     from numpy import array
@@ -86,10 +83,12 @@ class binarized_object_map(object):
     for odx in object_idx:
       tmp_array = hstack([tmp_array,ravel(array(mask_quantize(map_as_image,odx,scale=1))).reshape((npix,1))])
     return tmp_array
-    
+  
+  ##count the number of objects in the map
   def count_myself(self):
     return self.bom.shape[1]
   
+  ##add another object to the map?
   def append(self, data):
     from numpy import concatenate
     try:
@@ -97,20 +96,24 @@ class binarized_object_map(object):
     except:
       self.bom = concatenate([self.bom, data],axis=1)
     self.npix = self.bom.shape[0]
-      
+  
+  ##grab a single object from the object map
   def pull(self, n):
     if n:
         foo = np.atleast_2d(self.bom[:,n-1]).T  ##<<NOTE we are dealing with a pointer here
     else:
 	foo =  np.zeros((self.npix,1))
     return binarized_object_map(foo)
-	
+
+  ##remove all an object from the object map, and kill all pixels associate with it.
+  ##NOTE: after removing an object, the bom cannot be converted back into a proper image
   def remove(self, pulled_bom):
 	idx = np.array(pulled_bom.bom).astype('bool').flatten()  ## << make sure
 	foo = self.bom[~idx, :]
 	indices = foo.any(axis=0)
 	return binarized_object_map(foo[:,indices])
 
+  ##is there an object in the bom that matches the input object?   
   def find_match(self, one_object):
     return np.array(one_object.bom==self.bom).all(axis=0)
     
@@ -120,7 +123,12 @@ class binarized_object_map(object):
     bool_indx = np.ones(self.npix)
     bool_indx[pix_dx] = 0 ##<<this means we will remove everything *but* the selected pixels
     return self.remove(binarized_object_map(bool_indx)) ##<<not properly formatted as a col, but shouldn't matter   
+
     
+##a collection of boms. creates a big binary matrix from the columns of a bunch of boms
+##keeps track of which columns belong to what map. 
+##allows you to spawn a proper object_map object given an index.
+##TODO: Initialize using a matrix of object maps in addition to the file_list method
 class dead_leaves(binarized_object_map):  
     def __init__(self, object_map_file_list, image_shape=(32,32)):
 	self.file_list = object_map_file_list
@@ -141,15 +149,31 @@ class dead_leaves(binarized_object_map):
 
 	
     def spawn_object_map(self,om_dx):
+      '''
+      spawn_object_map(om_dx):
+      supply an index for the object map you want to see, return an object_map instance
+      '''
       as_cols = self.bom[:,slice(self.map_list[om_dx][0], self.map_list[om_dx][1])]
       as_cols = as_cols*range(1,as_cols.shape[1]+1)
       as_cols = np.sum(as_cols,axis=1)
       as_cols = PIL.Image.fromarray(as_cols.reshape(self.image_shape).astype('int8'), mode='L')
       return object_map(as_cols)
+    
+    def overlap(self, binary_masks):
+      '''
+      overlap(binary_masks)
+      pass a collection of binary masks such as the "masks" attribute of a "probes" instance
+      will return a report on which of the probes overlaps (even partially) with which of the objects
+      output is a list of arrays~num_objects x number_of_masks
+      '''
+      from numpy import array
+      number_of_masks = binaray_masks.shape[2]
+      RESPONSES = dl.bom.T.dot(self.masks.reshape(dl.npix,number_of_masks))  ##shape = num_objects x num_probes
+      return map(lambda x: RESPONSES[slice(x[0],x[1]), :]>0, dl.map_list)
 
 
         
- 
+## a subclass with a bunch of methods for manipulating and analyzing a bom 
 class object_map(binarized_object_map):
 	
 	def __init__(self, object_map_image):
@@ -182,47 +206,61 @@ class object_map(binarized_object_map):
 		return [self.mask_to_points(odx) for odx in range(1,self.count_myself()+1)]
 	
 	def find_min_to(self, odx, point):
-	##returns the point in the object closest to specified point
-		return nearest_point_to(self.map_as_membership[odx-1], point)
+	  '''
+	  find_min_to(odx, point):
+	  returns the point in the object closest to specified point
+	  '''
+	  return nearest_point_to(self.map_as_membership[odx-1], point)
 
 	def number_of_pixels(self, odx):
-		return np.sum(self.pull(odx).bom)
+	  '''
+	  number_of_pixels(odx)
+	  number of pixels occupied by object odx
+	  '''
+	  return np.sum(self.pull(odx).bom)
 	
 	def percent_of_map(self, odx):
-		return np.array(self.number_of_pixels(odx)).astype('float')/self.npix
+	  '''
+	  percentage of map occupied by object odx
+	  percent_of_map(odx)
+	  '''
+	  return np.array(self.number_of_pixels(odx)).astype('float')/self.npix
 		
 	def object_com(self,odx):
-		##center of mass of object. may be part of other object
-		return com(self.map_as_membership[odx-1])
+	  '''
+	  object_com(odx)
+	  spatial center of mass of object. may be part of other object
+	  '''
+	  return com(self.map_as_membership[odx-1])
 				
 	
 	def object_center(self, odx):
 	##find point closest to center of mass of object
-		return self.find_min_to(odx, self.object_com(odx))
+	  return self.find_min_to(odx, self.object_com(odx))
 		
 	def boundary_points(self, odx, n_points):
 	  '''##TODO: Doesn't check for repeats, which happen OFTEN. # of unique pts ~= n_points!!!'''
-		from math import pi
-		if not n_points:
-			pass
-		else:
-			
-			theta_delta = 360./n_points
-			oc = self.object_center(odx)
-			r,theta = cart2polar(self.map_as_membership[odx-1]-oc)
-			theta = theta*(180/pi)
-			max_dx = r.argmax()
-			boundary_r = r[max_dx]
-			boundary_theta = theta[max_dx]
-			
-			for ii in range(1,n_points):
-				new_dx = np.concatenate(angular_distance(theta, theta[max_dx]+ii*theta_delta)).argsort()
-				hbw = min(self.HARD_BIN_WIDTH, new_dx.size)
-				new_new_dx = r[new_dx[0:hbw]].argmax()
-				boundary_r = np.concatenate([boundary_r, r[new_dx[new_new_dx]]])
-				boundary_theta = np.concatenate([boundary_theta, theta[new_dx[new_new_dx]]])
-		
-		return np.concatenate([np.atleast_2d(boundary_r*np.cos(pi/180.*boundary_theta)+oc[0]).T, np.atleast_2d(boundary_r*np.sin(pi/180.*boundary_theta)+oc[1]).T],axis=1)
+	  from math import pi
+	  if not n_points:
+		  pass
+	  else:
+		  
+		  theta_delta = 360./n_points
+		  oc = self.object_center(odx)
+		  r,theta = cart2polar(self.map_as_membership[odx-1]-oc)
+		  theta = theta*(180/pi)
+		  max_dx = r.argmax()
+		  boundary_r = r[max_dx]
+		  boundary_theta = theta[max_dx]
+		  
+		  for ii in range(1,n_points):
+			  new_dx = np.concatenate(angular_distance(theta, theta[max_dx]+ii*theta_delta)).argsort()
+			  hbw = min(self.HARD_BIN_WIDTH, new_dx.size)
+			  new_new_dx = r[new_dx[0:hbw]].argmax()
+			  boundary_r = np.concatenate([boundary_r, r[new_dx[new_new_dx]]])
+			  boundary_theta = np.concatenate([boundary_theta, theta[new_dx[new_new_dx]]])
+	  
+	  return np.concatenate([np.atleast_2d(boundary_r*np.cos(pi/180.*boundary_theta)+oc[0]).T, np.atleast_2d(boundary_r*np.sin(pi/180.*boundary_theta)+oc[1]).T],axis=1)
 			
 	def good_samples(self, n_samples):
 		from numpy import array, concatenate, atleast_2d
@@ -263,7 +301,19 @@ class object_map(binarized_object_map):
 	  
 		
 		
-		
+	def overlap(self, binary_masks):
+	  '''
+	  overlap(binary_masks)
+	  pass a collection of binary masks such as the "masks" attribute of a "probes" instance
+	  binaray_masks is npix x npix x number_of_masks_rows x number_of_masks_cols
+	  will return a report on which of the probes overlaps (even partially) with which of the objects
+	  output is num_objects x number_of_masks binary array with 1's for each overlap
+	  '''
+	  from numpy import array
+	  number_of_masks = binary_masks.shape[2]*binary_masks.shape[3]
+	  RESPONSES = self.bom.T.dot(binary_masks.reshape(self.npix,number_of_masks))  ##shape = num_objects x num_probes
+	  return RESPONSES>0
+	
 		
 		
 		

@@ -1,0 +1,314 @@
+import numpy as np
+import math
+
+
+
+##generate all partitions of l numbers in non-empty K non-empty sets    
+def partitions(l, K):
+    if l:
+        prev = None
+        for t in partitions(l[1:], K):
+            tup = sorted(t)
+            if tup != prev:
+                prev = tup
+                for i in xrange(K):
+                    yield tup[:i] + [[l[0]] + tup[i],] + tup[i+1:]
+    else:
+        yield [[] for _ in xrange(K)]   
+
+##wrapper with better name and removes empty sets        
+def stirling_partitions(l, K):
+    for c in partitions(l, K):
+        if all(x for x in c): yield c        
+    
+##count the number of sirling partitions given l, k 
+#def stirling_num_of_2nd_kind(n,k):
+    #'''stirling_num_of_2nd_kind(number_of_elements, number_of_sets)'''
+    #n1=n
+    #k1=k
+    #if n<=0:
+        #return 1
+     
+    #elif k<=0:
+        #return 0
+     
+    #elif (n==0 and k==0):
+        #return -1
+     
+    #elif n!=0 and n==k:
+        #return 1
+     
+    #elif n<k:
+        #return 0
+ 
+    #else:
+        #temp1=stirling_num_of_2nd_kind(n1-1,k1)
+        #temp1=k1*temp1
+        #return (k1*(stirling_num_of_2nd_kind(n1-1,k1)))+stirling_num_of_2nd_kind(n1-1,k1-1)    
+        
+
+def stirling_num_of_2nd_kind(n,k):
+  #'''stirling_num_of_2nd_kind(number_of_elements, number_of_sets)'''
+  from math import factorial as bang
+  from scipy.misc import comb
+  return (1./bang(k))*np.sum(map(lambda j: (-1)**(k-j)*comb(k,j,exact=True)*j**n, range(k+1)))
+  #return (1./bang(k))*np.sum(map(lambda j: (-1)**(j)*comb(k,j,exact=True)*(k-j)**n, range(k+1)))
+
+      
+        
+##class point_field. could be used to create a nn_object_map       
+class point_field(object):
+  def __init__(self, num_rows, num_cols, size_of_field):
+    '''
+    point_field(num_rows, num_cols, size_of_field)
+    creates a list containing num_rows*num_cols Point objects
+    initializes to a regular grid spaced on a field that is size_of_field x size_of_field
+    '''
+    from numpy import linspace, meshgrid, hstack
+    x,y = meshgrid(linspace(0,size_of_field, num_rows), linspace(0, size_of_field, num_cols))
+    self.points = map(Point, x.flatten(),y.flatten())
+    self.size_of_field = size_of_field
+
+  
+  def uniform_shift(self, dx,dy):
+    from numpy import mod
+    '''
+    uniform_shift(dx,dy)
+    moves every point by dx,dy
+    x --> x+dx
+    y --> y+dy
+    circular wrap-around
+    '''
+    for pp in self.points:
+      pp.slide_xy(self.size_of_field*dx, self.size_of_field*dy)
+      pp.x = mod(pp.x, self.size_of_field)
+      pp.y = mod(pp.y, self.size_of_field)
+    
+    
+  def scatter(self, scale=1):
+    from numpy import mod
+    '''
+    scatter()
+    shift each point in a random direction
+    circular wrap-around
+    modifies in-place
+    '''
+    from numpy.random import random
+    for pp in self.points:
+      pp.slide_xy(self.size_of_field*scale*random(), self.size_of_field*scale*random())
+      pp.x = mod(pp.x, self.size_of_field)
+      pp.y = mod(pp.y, self.size_of_field)
+      
+  def flatten(self):
+    '''
+    convert a list of Point objects into a 2D numpy array
+    returns a 2D numpy array
+    '''
+    from numpy import array
+    return array([p.as_tuple() for p in self.points])
+    
+ 
+      
+###class: clusters. some dumb partitioning of generic elements
+class clusters(object):
+  '''
+  clusters(collection_of_stuff, cluster_pref = 'different', [number_of_clusters])
+  returns a list of indices that cluster whatever is in your collection of stuff
+  cluster_pref = 'same' assigns all elements to same cluster (cluster 0)
+  cluster_pref = 'different' assigns each element to a different cluster (0 through len-1)
+  cluster_pref = 'random' gives one random partitioning of the elements into number_of_clusters non-empty sets
+  cluster_pref = 'all' all partitions collection into "number_of_clusters" non-empty sets.
+		  default number is 1. will refuse if number too big.
+		  format is list of lists.
+  '''
+  def __init__(self, collection_of_stuff, cluster_pref='different', number_of_clusters = None):
+    too_damn_big = 10**7  ##HACK: I need to learn how to fucking program
+    L = len(collection_of_stuff)
+    if number_of_clusters is None:
+      self.num_clust = 1
+    else:
+      self.num_clust = number_of_clusters
+    if number_of_clusters > L:
+      raise Exception('more clusters than elements')
+    if cluster_pref is 'same':
+      self.grouping = [[0]*L]
+    if cluster_pref is 'different':
+      self.grouping = [range(L)]
+    if cluster_pref is 'random': ##avoids non-empty sets
+      self.grouping = self.random_cluster(L)
+    if cluster_pref is 'all': 
+      if stirling_num_of_2nd_kind(L, self.num_clust) > too_damn_big:
+		raise Exception('trying to generate too many partitions. think smaller')
+      else: 
+      	all_clusts = sirling_partitions(range(L), self.num_clust)
+      	self.grouping = map(lambda x: self.convert_sublist(x, L), all_clusts)
+    if type(cluster_pref) is int:
+      self.grouping = [self.random_cluster(L)[0] for ii in range(cluster_pref)]
+           
+  def random_cluster(self, L):
+    from numpy.random import permutation as perm
+    from numpy.random import choice
+    return [list(perm(list(choice(range(self.num_clust), size=L-self.num_clust))+range(self.num_clust)))]
+
+  def convert_sublist(self,subl, n):
+    baz = [None]*n
+    for idx, kk in enumerate(subl):
+    	for jj in kk:
+    		baz[jj] = idx
+    return baz
+       
+##class sparse_point_maps: create object maps by interpolating from sparse samples of points in each object 
+class sparse_point_maps(point_field):
+  '''
+  a hybrid of the point_field and cluster class. inherits from both.
+  sparse_point_maps(self,num_rows,num_cols,size_of_field,cluster_pref='different', number_of_clusters=None)
+  has method nn_interpolate that uses the points and grouping attributes to create object maps
+  object indices start with 1, ie there is no 0 object
+  '''
+  def __init__(self,num_rows,num_cols,size_of_field,cluster_pref='different', number_of_clusters=None):
+    point_field.__init__(self, num_rows,num_cols,size_of_field)
+    self.grouping = clusters(self.points, cluster_pref, number_of_clusters).grouping
+    
+  def nn_interpolation(self, dx=None):
+    '''
+    nn_interpolation(dx=None)
+    interpolate all maps in grouping, unless dx = iterable of integers
+    '''
+    from scipy.interpolate import griddata
+    from numpy import meshgrid, array, zeros
+    grid_x, grid_y = meshgrid(range(self.size_of_field), range(self.size_of_field))
+    if dx is None:
+      first_dim = len(self.grouping)
+      grp = self.grouping
+    else:
+      first_dim = len(dx)
+      grp = [self.grouping[ii] for ii in dx]
+    x = zeros((first_dim, self.size_of_field, self.size_of_field))
+    cnt = 0
+    for pp in grp:
+      x[cnt,:,:] = griddata(self.flatten(), array(pp), (grid_x, grid_y), method='nearest')
+      cnt += 1
+    return x.astype('uint8')+1 ##the +1 because there is always a 0th object
+
+    
+## a lowly servant class 
+class Point:
+    
+    """A point identified by (x,y) coordinates.
+    
+    supports: +, -, *, /, str, repr
+    
+    length  -- calculate length of vector to point from origin
+    distance_to  -- calculate distance between two points
+    as_tuple  -- construct tuple (x,y)
+    clone  -- construct a duplicate
+    integerize  -- convert x & y to integers
+    floatize  -- convert x & y to floats
+    move_to  -- reset x & y
+    slide  -- move (in place) +dx, +dy, as spec'd by point
+    slide_xy  -- move (in place) +dx, +dy
+    rotate  -- rotate around the origin
+    rotate_about  -- rotate around another point
+    """
+    
+    def __init__(self, x=0.0, y=0.0):
+        self.x = x
+        self.y = y
+    
+    def __add__(self, p):
+        """Point(x1+x2, y1+y2)"""
+        return Point(self.x+p.x, self.y+p.y)
+    
+    def __sub__(self, p):
+        """Point(x1-x2, y1-y2)"""
+        return Point(self.x-p.x, self.y-p.y)
+    
+    def __mul__( self, scalar ):
+        """Point(x1*x2, y1*y2)"""
+        return Point(self.x*scalar, self.y*scalar)
+    
+    def __div__(self, scalar):
+        """Point(x1/x2, y1/y2)"""
+        return Point(self.x/scalar, self.y/scalar)
+    
+    def __str__(self):
+        return "(%s, %s)" % (self.x, self.y)
+    
+    def __repr__(self):
+        return "%s(%r, %r)" % (self.__class__.__name__, self.x, self.y)
+    
+    def length(self):
+        return math.sqrt(self.x**2 + self.y**2)
+    
+    def distance_to(self, p):
+        """Calculate the distance between two points."""
+        return (self - p).length()
+    
+    def as_tuple(self):
+        """(x, y)"""
+        return (self.x, self.y)
+    
+    def clone(self):
+        """Return a full copy of this point."""
+        return Point(self.x, self.y)
+    
+    def integerize(self):
+        """Convert co-ordinate values to integers."""
+        self.x = int(self.x)
+        self.y = int(self.y)
+    
+    def floatize(self):
+        """Convert co-ordinate values to floats."""
+        self.x = float(self.x)
+        self.y = float(self.y)
+    
+    def move_to(self, x, y):
+        """Reset x & y coordinates."""
+        self.x = x
+        self.y = y
+    
+    def slide(self, p):
+        '''Move to new (x+dx,y+dy).
+        
+        Can anyone think up a better name for this function?
+        slide? shift? delta? move_by?
+        '''
+        self.x = self.x + p.x
+        self.y = self.y + p.y
+    
+    def slide_xy(self, dx, dy):
+        '''Move to new (x+dx,y+dy).
+        
+        Can anyone think up a better name for this function?
+        slide? shift? delta? move_by?
+        '''
+        self.x = self.x + dx
+        self.y = self.y + dy
+    
+    def rotate(self, rad):
+        """Rotate counter-clockwise by rad radians.
+        
+        Positive y goes *up,* as in traditional mathematics.
+        
+        Interestingly, you can use this in y-down computer graphics, if
+        you just remember that it turns clockwise, rather than
+        counter-clockwise.
+        
+        The new position is returned as a new Point.
+        """
+        s, c = [f(rad) for f in (math.sin, math.cos)]
+        x, y = (c*self.x - s*self.y, s*self.x + c*self.y)
+        return Point(x,y)
+    
+    def rotate_about(self, p, theta):
+        """Rotate counter-clockwise around a point, by theta degrees.
+        
+        Positive y goes *up,* as in traditional mathematics.
+        
+        The new position is returned as a new Point.
+        """
+        result = self.clone()
+        result.slide(-p.x, -p.y)
+        result.rotate(theta)
+        result.slide(p.x, p.y)
+        return result
