@@ -17,6 +17,7 @@ from PIL import ImageFilter
 from imagery_psychophysics.src.model_z import noise_grid
 from numpy.random import binomial
 from object_parsing.src.image_objects import apply_mask
+from time import time
 
 
 class window(object):
@@ -132,7 +133,7 @@ def multi_union(iterable):
 def nbd_color_counts(window_nbd, window_colorings,expand=True):
     '''
     given a set of window colorings (encoding as n-bit strings) for a nbd with t windows, return the color count for all subsets in the ndb.
-    (window_nbd, color_counts) = nbd_color_counts(self, window_nbd, window_colorings)
+    (window_nbd, color_counts) = nbd_color_counts(window_nbd, window_colorings)
     '''
     
     if expand: 
@@ -156,19 +157,90 @@ def nbd_color_counts(window_nbd, window_colorings,expand=True):
     return nbd_powerset,unions    
 
 
-def enumerate_nbd_color_counts(num_objects, window_nbd, redundant=False):
-    t = len(window_nbd.tup)
-    windows = window_nbd
-    window_names = windows.powerset(nonempty=True)
+def enumerate_nbd_color_counts(n_colors, window_nbd, redundant=False):
+    
+    '''
+    enumerate_nbd_color_counts(n_colors, window_nbd, redundant=False)
+    window_nbd is a window object
+    enumerates all possible color counts for the given window nbd
+    returns a pandas dataframe, columns = window_nbd.powerset(nonempty=True).strings
+    Uses matrix multiplication to get unions.
+    '''
+    n_win = len(window_nbd.tup)
+    theory = (2**n_colors-1)**n_win
+    
+    chunksize = 1000000
+    
+    
+    window_names = window_nbd.powerset(nonempty=True)
     unions = []
-    for win_clrs in generate_window_colorings(num_objects,t,bits=True):
-	_,uu = nbd_color_counts(windows, win_clrs)
-	if redundant:
-	    unions += [uu]
-	elif uu not in unions:
-	    unions += [uu]
-    return pd.DataFrame(np.array(unions), columns = window_names.strings)
+    cntr = 0
+    start = time()
+    
+    ##===WORKING ON THIS !!!=======
+    coeffs = np.zeros((n_win,len(window_names.tups)))
+    coeffs = pd.DataFrame(data = coeffs, columns = window_names.tups, index = window_nbd.tup)
+    for t in window_names.tups:
+        coeffs.loc[t,t] = 1
+    ###===========================
+    
+    for win_clrs in generate_window_colorings(n_colors,n_win,bits=False):
+        if not np.mod(cntr,chunksize):
+	  
+	    ##inform.
+            print 'counts so far: %d' %(cntr)
+            print 'took %f seconds' %(time()-start)
+           
+            
+            ##accum. current
+	    coloring_array = np.array(map(lambda x: np.fromstring(x,dtype='u1')-ord('0'),win_clrs))
+	    unions += [np.sum(coloring_array.T.dot(coeffs).clip(0,1),axis=0)]
+	    
+	    ##enlarge df
+            try:
+	      ##if not the first round
+	      df = df.append(pd.DataFrame(np.array(unions), columns = window_names.strings))
+	    except:
+	      try:
+		##if the first round
+		df = pd.DataFrame(np.array(unions), columns = window_names.strings)
+	      except:
+		print 'this does not work'
+	    
+	    ##deal with redundancy
+	    if not redundant:
+	      #print 'deduplicating'
+	      df = df.drop_duplicates()
+	    
+	    ##reset unions,timers
+	    unions = []
+	    start = time()
+        ##otherwise just keep accumulating
+        else:    
+	  coloring_array = np.array(map(lambda x: np.fromstring(x,dtype='u1')-ord('0'),win_clrs))
+	  unions += [np.sum(coloring_array.T.dot(coeffs).clip(0,1),axis=0)]
+        cntr += 1
+    
+    ##append last batch
+    if len(unions):
+      df = df.append(pd.DataFrame(np.array(unions), columns = window_names.strings))
+    if not redundant:
+	#print 'deduplicating'
+	df = df.drop_duplicates()
 
+    ##inform
+    print 'took %f seconds' %(time()-start)
+    print '---'
+    print 'should be: %d. Is: %d' %(theory, cntr)
+    print 'reduced to: %d' %(df.shape[0])
+    print 'reduction is: %f percent' %(100-df.shape[0]/float(theory)*100)
+
+
+    
+    ##finis
+    return df
+    
+  
      
 class consistent_map_counter(object):
   '''
@@ -208,8 +280,10 @@ class consistent_map_counter(object):
   ###nbd_color_count MUST be ordered according to "window_names"
   def count_consistent_coloring(self,num_objects,nbd_color_count):
     nbd_dict = dict(zip(self.nbd.tups,nbd_color_count))  ##<<user must know how to order the "nbd_color_counts" !!!
+
     upper_color_counts = np.array([nbd_dict[w] for w in self.nbd_minus_target.tups])
     upper_counts = upper_color_counts.dot(self.upper_counting_coeffs) ##1 x S 
+
     lower_counts = np.array(nbd_color_count).dot(self.lower_counting_coeffs)    ##1 x S
     count  = np.prod(map(lambda up,down: comb(up,down,exact=True), upper_counts,lower_counts))
     
@@ -231,5 +305,4 @@ class consistent_map_counter(object):
     nbd_dict = dict(zip(self.nbd.tups,nbd_color_count)) ##<<user must know how to order the "nbd_color_counts" !!!
     target_color_count = nbd_dict[(self.target,)]
     return self.count_consistent_coloring(num_objects,nbd_color_count)*snk(target_window_size,target_color_count)*bang(target_color_count)
-    
     
