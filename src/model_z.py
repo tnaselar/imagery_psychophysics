@@ -45,12 +45,12 @@ def noise_grid(noise_grid_x_dns,noise_grid_y_dns ):
   noise_grid_x_dns ~ density of noise model param grid, x-axis
   noise_grid_y_dns ~ density of noise model param grid, y-axis
   '''
-  small = 10**-6  ##make sure off-prob strictly < on-prob
+  small = 10**-3  ##make sure off-prob strictly < on-prob
   dns = noise_grid_x_dns ##density of noise model param grid, x-axis
   D = noise_grid_y_dns ##density of noise model param grid, y-axis
   
-  p_on =  [np.array([ii]*np.max([np.ceil(D*ii),1])) for ii in np.linspace(small,1,dns)]
-  p_off = [np.linspace(0,ii[0]-small,len(ii)) for ii in p_on]
+  p_on =  [np.array([ii]*np.max([np.ceil(D*ii),1])) for ii in np.linspace(small,1-small,dns)]
+  p_off = [np.linspace(small,ii[0]-small,len(ii)) for ii in p_on]
   p_on = [item for sublist in p_on for item in sublist]
   p_off = [item for sublist in p_off for item in sublist]
   return p_on, p_off
