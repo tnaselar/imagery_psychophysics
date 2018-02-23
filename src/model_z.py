@@ -49,7 +49,7 @@ def noise_grid(noise_grid_x_dns,noise_grid_y_dns ):
   dns = noise_grid_x_dns ##density of noise model param grid, x-axis
   D = noise_grid_y_dns ##density of noise model param grid, y-axis
   
-  p_on =  [np.array([ii]*np.max([np.ceil(D*ii),1])) for ii in np.linspace(small,1-small,dns)]
+  p_on =  [np.array([ii]*np.max([np.ceil(D*ii).astype('int32'),1])) for ii in np.linspace(small,1-small,dns)]
   p_off = [np.linspace(small,ii[0]-small,len(ii)) for ii in p_on]
   p_on = [item for sublist in p_on for item in sublist]
   p_off = [item for sublist in p_off for item in sublist]

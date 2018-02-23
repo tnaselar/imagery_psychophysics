@@ -1,7 +1,5 @@
 
-# coding: utf-8
-
-# In[1]:
+##Code for variational approach to inferenece in the imagery probe experiment
 
 ##my stuff
 from imagery_psychophysics.src.stirling_maps import sparse_point_maps as spm
@@ -32,38 +30,24 @@ from matplotlib.mlab import griddata
 get_ipython().magic(u'matplotlib inline')
 
 
-# ## In which we add some code to loop over all subjects, images, conditions and save results.
-# 
 
-#    ### Model variable classes
-
-# Utility variables needed for various things below
-
-# In[2]:
+#===Utility variables needed for various things below
 
 ##a theano random number generator
 rng = MRG_RandomStreams() #use_cuda = True
-
-
-# In[3]:
 
 ##data types
 floatX = 'float32'
 intX = 'int32'
 
-
-# In[4]:
-
-##sometime we want to convert to 1hot format outside of theano expressions
-##some compile the theano to_one_hot here
+##sometimes we want to convert to 1hot format outside of theano expressions
+##so we compile the theano function to_one_hot here
 _anyVector = T.vector('anyMatrix',dtype=intX)
 _anyInt = T.scalar('anyInt',dtype=intX)
 to_one_hot_func = function(inputs=[_anyVector,_anyInt], outputs=to_one_hot(_anyVector, _anyInt))
 
 
-# Basic model dimensions
-
-# In[5]:
+#===Classes for defining the model variables
 
 ##defines number of objects in an object map
 class numObjects(object):
@@ -105,9 +89,6 @@ class numPixels(object):
 
 
 # Gamma-distributed hyperparameter for prior distribution over object categories
-
-# In[6]:
-
 class priorDispersion(object):
     def __init__(self,maxDispersion=10):
         ##npy vars
@@ -125,9 +106,6 @@ class priorDispersion(object):
 
 
 # The dirichlet-distributed K parameters that define multinomial object distribution prior
-
-# In[7]:
-
 class categoryProbs(object):
     def __init__(self, numObjects_inst, priorDispersion_inst):
         self.priorDispersion = priorDispersion_inst
@@ -147,10 +125,7 @@ class categoryProbs(object):
         self.pi = np.array(value,dtype=floatX)
 
 
-# The object map $Z$
-
-# In[8]:
-
+# The object map Z
 class latentObjMap(object):
     def __init__(self,categoryPrior_inst, numPixels_inst):
         self.categoryPrior=categoryPrior_inst
@@ -207,9 +182,7 @@ class latentObjMap(object):
         
 
 
-# #### The windows
-
-
+# The windows, or probes. These words are used interchangably.
 class probes(object):
     
     ##dumb initializer. Want to be able to process windows before assigning as attributes
@@ -269,49 +242,124 @@ class probes(object):
         
         return windows
     
+    #we don't set the value during initialization because we may want to process them first
     def set_value(self,windows,flatten = False):
         self.N,self.D1Prime,self.D2Prime = windows.shape
         self.DPrime = self.D1Prime*self.D2Prime
         if flatten:
             windows = windows.reshape((self.N,self.DPrime))
         self.windows = windows.astype(intX)
-
-         
         
+    #sample some fake windows
+    def make_windows(self, shape, baseShape, numScales, stride, numRandProbes, randProbeOrder):
+        
+        '''
+        make_windows(shape, baseShape, numScales, stride, numRandProbes, randProbeOrder)
+        
+        constructs binary masks of the target image. these to be used as probes (or windows)
+        
+        none of this is guaranteed to work unless all dimensions are powers of 2
+        
+        this method is stupid and I hate it. For some reason it make blank windows sometimes. fuck it.
+        
+        inputs:
+            shape ~ the shape of target image the windows will mask. this is referred to as (D1', D2') below
+            baseShape ~ shape the smallest window. all other windows will be compositions of multiple smaller windows
+            numScales ~ integer number of different scales at which to construct windows. will determine scales by log2space(baseShape, shape, num=numScales)
+            stride ~ real number (0,1], determines stride of each window as fraction of scale.
+            numRandProbes ~ integer number of non-contiugous probes. constructed by random selection of sets of base probes
+            randProbeOrder ~ integer number of baseProbes that will appear in the non-contiguous probes. if a tuple, treat as a range
+            
+        '''
+        
+        #determine corners of the contiguous probes
+        corners = []
+        counter = 0
+        numBaseCorners = 0
+        contiguousProbeWidths = np.logspace(np.log2(baseShape[0]), np.log2(shape[0]),num=numScales,base=2,dtype=intX)
+        contiguousProbeHeights = np.logspace(np.log2(baseShape[1]), np.log2(shape[1]),num=numScales,base=2,dtype=intX)
+        for scale in range(numScales):
+            width = contiguousProbeWidths[scale]
+            height = contiguousProbeHeights[scale]
+            left = 0
+            right = width
+            up = 0
+            down = height
+            while (right <= shape[0]):
+                while (down <= shape[1]):
+                    corners.append((counter, left, right, np.clip(up,0,shape[0]), np.clip(down,0,shape[0])))                        
+                    up += int(stride*height)
+                    down = up+height
+                    #down = np.clip(down, 0, shape[1]-1)
+                    counter += 1
+                left += int(stride*width)
+                right = left+width
+                #right = np.clip(right, 0, shape[0]-1)
+                up = 0
+                down = height
+            if numBaseCorners == 0:
+                numBaseCorners = np.copy(counter)
+        #make contiguous probes
+        numWindows = (counter-1)+numRandProbes
+        W = np.zeros((numWindows, shape[0],shape[1]),dtype=intX)
+        idx = [np.meshgrid(i, np.arange(left,right), np.arange(up,down)) for i,left,right,up,down in corners]
+        for boxIndices in idx:
+            W[boxIndices]=1
+
+        #make noncontiguous probes
+        #here's one way to handle multiple cases
+        def get_numProbes():
+            if type(randProbeOrder) is tuple:
+                return lambda: np.random.randint(randProbeOrder[0], randProbeOrder[1]+1)
+            else:
+                return lambda: randProbeOrder
+        
+        numProbes = get_numProbes()
+        for winIdx in range(counter, numWindows):
+            randCorners = [corners[i] for i in np.random.randint(0, numBaseCorners, size=numProbes())]
+            idx = [np.meshgrid(winIdx, np.arange(left,right), np.arange(up,down)) for _,left,right,up,down in randCorners]
+            for boxIndices in idx:
+                W[boxIndices]=1
+            
+        return W   
+        
+        
+        
+
+    #we don't have to use these windows, but we might as well.     
+    #def make_windows(self, makeWindows=False, stride = 1, sizes = [1], n_groups=7, group_order = 2):
+        #if makeWindows:
+            #Windows = []
+            #for sz in sizes:
+                #scale_count = 0
+                #for rows in np.arange(sz,D1,stride,dtype=int, ):
+                    #for cols in np.arange(sz,D2,stride,dtype=int):
+                        #one_win = np.zeros((D1,D2),dtype=floatX)
+                        #one_win[(rows-sz):(rows+sz), (cols-sz):(cols+sz)]=1
+                        #Windows.append(one_win)
+                        #scale_count +=1
+                #print scale_count
+
+
+            #N = len(Windows)
+            #n_groups *= D 
+            #W = np.zeros((N+n_groups,D),dtype=intX)
+            #for n in range(N):
+                #W[n,:] = Windows.pop().ravel()
+
+            #for n in range(N,N+n_groups):
+                #rand_pairs = np.random.permutation(N)[:group_order]
+                #W[n,:] = np.clip(np.sum(W[rand_pairs[0:group_order],:],axis=0), 0, 1)
+
+            #W = W[:(N+n_groups),:]
+
+
+            #N = W.shape[0]
+            #return W.astype(intX)
     
-    def make_windows(self, makeWindows=False, stride = 1, sizes = [1], n_groups=7, group_order = 2):
-        if makeWindows:
-            Windows = []
-            for sz in sizes:
-                scale_count = 0
-                for rows in np.arange(sz,D1,stride,dtype=int, ):
-                    for cols in np.arange(sz,D2,stride,dtype=int):
-                        one_win = np.zeros((D1,D2),dtype=floatX)
-                        one_win[(rows-sz):(rows+sz), (cols-sz):(cols+sz)]=1
-                        Windows.append(one_win)
-                        scale_count +=1
-                print scale_count
 
 
-            N = len(Windows)
-            n_groups *= D 
-            W = np.zeros((N+n_groups,D),dtype=intX)
-            for n in range(N):
-                W[n,:] = Windows.pop().ravel()
-
-            for n in range(N,N+n_groups):
-                rand_pairs = np.random.permutation(N)[:group_order]
-                W[n,:] = np.clip(np.sum(W[rand_pairs[0:group_order],:],axis=0), 0, 1)
-
-            W = W[:(N+n_groups),:]
-
-
-            N = W.shape[0]
-            return W.astype(intX)
-    
-
-
-# In[11]:
+# The test or target image
 
 class target_image(object):
     def __init__(self):
@@ -352,10 +400,7 @@ class target_image(object):
         
 
 
-# The noise params $\theta_{+}, \theta_{-}$
-
-# In[12]:
-
+# The noise parameters, known at theta_plus, theta_minus, or p_on, p_off
 class noiseParams(object):
     def __init__(self):
         pass
@@ -371,10 +416,7 @@ class noiseParams(object):
         return p_on, p_off
 
 
-# The observed responses $\mathbf{r}$
-
-# In[13]:
-
+# The observed responses r
 class responses(object):
     '''
     responses(latentObjMap_inst, noiseParams_inst)
@@ -581,12 +623,9 @@ class responses(object):
                 raise ValueError('some responses are larger than number of pixels in corresponding window. probably over-downsampled windows')
 
 
-# ### Inference classes
+#=======Classes for performing variational inference
 
-# Define variational updates and optimization procedures for model variables
-
-# In[14]:
-
+#Inferring the variational posterior over object maps
 class inferQZ(object):
     def __init__(self):
         self.compile_updater()
@@ -625,8 +664,8 @@ class inferQZ(object):
         self._update_func = function([_oc_probs, _lnP_star, _v], outputs = _Q_z)
 
 
-# In[15]:
 
+#Optimize the noise parameters--we take armage to get a point estimate
 class optimizeNoiseParams(object):
     def __init__(self):
         'hi'
@@ -646,8 +685,7 @@ class optimizeNoiseParams(object):
         return goodnessOfFitStar, noiseParamStarIdx
 
 
-# In[16]:
-
+#variational inference for the prior over object classes
 class inferQPi(object):
     def __init__(self,):
         self.compile_updater()
@@ -670,7 +708,7 @@ class inferQPi(object):
  
 
 
-# Variational inference for $q(Z)$, $q(\pi)$, noiseparams
+# The VI class coordinates the learning procedures for $q(Z)$, $q(\pi)$, noiseparams
 # 
 # *Nasty book-keeping note*: counts, responses, and object id's are often converted to indices, or to 1hot formats.
 # To convert counts to indices we need to subtract 1, because counts always range from 1 to K (inclusive),
@@ -682,9 +720,6 @@ class inferQPi(object):
 # Becuase 0 to K (inclusive) is K+1 numbers, we do need to make sure that arrays for storing discrete responses have K+1 elements.
 # 
 # Whew.
-
-# In[17]:
-
 class VI(object):
     def __init__(self, responses_inst, inferQZ_inst, optimizeNoiseParams_inst, inferQPi_inst):
         self.responses = responses_inst
@@ -864,7 +899,7 @@ class VI(object):
         D1 = self.responses.Z.numPixels.D1
         D2 = self.responses.Z.numPixels.D2
         D = D1*D2
-        objectMapStack = make_object_map_stack(K, 2*K, 2*K, (D1,D2), numStarterMaps)
+        objectMapStack = make_object_map_stack(K, int(np.sqrt(K)+1), int(np.sqrt(K)+1), (D1,D2), numStarterMaps)
 
         ##get table of log likelihoods for observed data
         logEmpiricalLkhdTable = np.log(empiricalLkhdTableStar)
@@ -896,15 +931,21 @@ class VI(object):
     ##==========update and optimization methods=============
     
     def optimize_hyper_parameters(self):
+        '''
+        loop over all stored models and return the one with the best performance
+        (currently this is best percent correct)
+        '''
         bestPercentCorrect = 0
         bestK = np.inf
         bestD = np.inf
         for model in self.storedModels.values():
+            ##if this model is better than the best, promote it to new best
             if model.bestPercentCorrect > bestPercentCorrect:
                 bestPercentCorrect = model.bestPercentCorrect
                 bestModel = model
                 bestK = model.responses.Z.categoryPrior.numObjects.K
                 bestD = model.responses.Z.numPixels.D
+            ##if this model is tied for best has fewer objects or pixels, promote it to new best    
             elif model.bestPercentCorrect == bestPercentCorrect:
                 if (model.responses.Z.categoryPrior.numObjects.K < bestK) or (model.responses.Z.numPixels.D < bestD):
                     bestPercentCorrect = model.bestPercentCorrect
@@ -991,7 +1032,7 @@ class VI(object):
         goodnessOfFitStar, posterior_entropy, ELBO = self.ELBO_update_func(qZ,np.asscalar(goodnessOfFitStar))
         return goodnessOfFitStar, posterior_entropy, ELBO
         
-    def update_log_predictive_distribution(self, qZ, noiseParamStarIdx):
+    def update_log_predictive_distribution(self, qZ, noiseParamStarIdx, numSamples=None):
         '''
         update_log_predictive_distribution(qZ, noiseParamStarIdx)
         inputs:
@@ -1002,9 +1043,13 @@ class VI(object):
             predictiveDistribution ~ N x K+1 distribution over the K+1 possible response to each of the N windows
             empiricalLogPredictiveDistribution ~ N x 1, this is log of predictiveDistribution sliced at empirical responses 
         '''
+        ##handle kwargs
+        if numSamples is None:
+            numSamples = self.numSamples
+        
         ##create object count probabilities
         K = self.responses.Z.categoryPrior.numObjects.K       
-        sampledZ = self.responses.Z.sample(M=self.numSamples, pZ=qZ)
+        sampledZ = self.responses.Z.sample(M=numSamples, pZ=qZ)
         oc_counts = self.responses.compute_feature(sampledZ,winIdx=self.curIdx)
         oc_probs = self.object_count_prob_func(oc_counts, K)
         
@@ -1032,7 +1077,10 @@ class VI(object):
         return fraction_correct*100, predictions
     
     def criticize(self, qZ, noiseParamStarIdx, goodnessOfFitStar, t):
-        
+        '''
+        collects various performance metrics. saves them to training history arrays (which are attributes of the VI object)
+        notices when a training step produces a new, better solution, saves the model parameters when this happens
+        '''
         self.goodnessOfFitStar_history[t] = goodnessOfFitStar
         _,self.posteriorEntropy_history[t], self.ELBO_history[t] = self.update_ELBO(qZ, goodnessOfFitStar)
         
@@ -1057,7 +1105,7 @@ class VI(object):
         print 'goodness of fit: %f' %(goodnessOfFitStar)
         print 'posterior_entropy: %f' %(self.posteriorEntropy_history[t])
         print 'mean log of predictive distribution over test samples: %f' %(self.lnPredictiveDistribution_history[t])
-        print 'pecent correct over test samples: %f' %(self.percentCorrect_history[t])
+        print 'percent correct over test samples: %f' %(self.percentCorrect_history[t])
         print '\n'
         
         return 
@@ -1072,8 +1120,8 @@ class VI(object):
     def train_test_regularize_splits(self, trainTestSplit, trainRegSplit):
         N = self.responses.observations.shape[0]
         shuffledIdx = np.random.permutation(N)
-        lastTestIdx = np.floor((1-trainTestSplit)*N)
-        lastRegIdx = lastTestIdx+np.floor((1-trainRegSplit)*(N-lastTestIdx))
+        lastTestIdx = np.floor((1-trainTestSplit)*N).astype(intX)
+        lastRegIdx = lastTestIdx+np.floor((1-trainRegSplit)*(N-lastTestIdx)).astype(intX)
     
         testIdx = shuffledIdx[:lastTestIdx]
         regIdx = shuffledIdx[lastTestIdx:lastRegIdx]
@@ -1109,6 +1157,9 @@ class VI(object):
         
     ##visualize the variational posterior over pixels
     def see_Q_Z(self, qZ, target_object_map = None, clim=[0,1]):
+        '''
+        visualize the variational posterior over pixels
+        '''
         ##view: construct an image grid
         fig = plt.figure(1, (30,10))
         K = qZ.shape[0]
@@ -1143,7 +1194,7 @@ class VI(object):
     def run_VI(self, initialNoisinessOfZ, pOnInit, pOffInit, noiseParamNumber, numStarterMaps, numSamples, maxIterations, trainTestSplit, trainRegSplit, optimizeHyperParams=True, pixelNumOverMin=3, objectNumOverMin=3):
       
         
-        ##reset the rng seed
+        ##reset the rng seed: this makes sure we get same random numbers for each value of the hyperparameters...at least I think it does!
         self.rng_seed()
 
         ##divide the training, testing, regularization datasets
@@ -1158,7 +1209,7 @@ class VI(object):
             allArgs = [initialNoisinessOfZ, pOnInit, pOffInit, noiseParamNumber, numStarterMaps, numSamples, maxIterations, trainTestSplit, trainRegSplit]
             
             ##initialize the ranges of hyperparameters
-            self.init_number_of_objects_range(numOverMin=objectNumOverMin)
+            #self.init_probesnumber_of_objects_range(numOverMin=objectNumOverMin)
             self.init_pixel_resolution_range(numOverMin=pixelNumOverMin)
             
             ##run vi in a loop over hyperparameters
@@ -1169,14 +1220,14 @@ class VI(object):
                     self.responses.Z.numPixels.set_value(d1,d2)
                     print '--------image resolution: (%d,%d,%d)------------' %(self.responses.Z.numPixels.D1,self.responses.Z.numPixels.D2,self.responses.Z.numPixels.D)
                     ##recursively call run_VI, each time with a fixed set of hyperparams, avoiding the hyperparameter loop
-                    numIters=self.run_VI(*allArgs, optimizeHyperParams=False)
+                    _,numIters=self.run_VI(*allArgs, optimizeHyperParams=False)
                     self.numIters = numIters
-                    self.store_learned_model()
-            bestModel = self.optimize_hyper_parameters()
-            bestModel.trainIdx = trainIdx
-            bestModel.regIdx = regIdx
-            bestModel.testIdx = testIdx
-            return bestModel
+                    #self.store_learned_model()
+            #bestModel = self.optimize_hyper_parameters()
+            #bestModel.trainIdx = trainIdx
+            #bestModel.regIdx = regIdx
+            #bestModel.testIdx = testIdx
+            #return bestModel
         else:
 
 
@@ -1257,13 +1308,34 @@ class VI(object):
 
                 iteration += 1
 
-            return iteration
+            #return iteration
+            self.store_learned_model()
+        bestModel = self.optimize_hyper_parameters() ##if optimizeHyperParams=False, this just returns the one trained model. otherwise it updates the current best.
+        bestModel.trainIdx = trainIdx
+        bestModel.regIdx = regIdx
+        bestModel.testIdx = testIdx
+        return bestModel, iteration
+        
 
 
-# #### Big dumb function for importing data
 
-# In[18]:
+#===utiliity
+##for generating stacks of one-hot-encoded object maps. these are "special" smooth maps
+def make_object_map_stack(K, num_rows, num_cols, image_dimensions,num_maps):
+    size_of_field = int(np.mean(image_dimensions))
+    D = np.prod(image_dimensions)
+    object_map_base = spm(num_rows,num_cols,size_of_field,cluster_pref = 'random',number_of_clusters = K)
+    object_maps = np.zeros((num_maps, K, D),dtype=intX)
+    for nm in range(num_maps):
+        object_map_base.scatter()
+        tmp = np.squeeze(object_map_base.nn_interpolation())
+        tmp = imresize(tmp, image_dimensions, interp='nearest')
+        ##convert to one_hot encoding
+        tmp = np.eye(K)[tmp.ravel()-1].T  ##K x D
+        object_maps[nm] = tmp
+    return object_maps
 
+#===Antiquated: Big dumb function for importing data from first experiment. Will remove in later iterations.
 def open_imagery_probe_data(*args):
     '''
     open_imagery_probe_data() returns a pandas dataframe with lots of info
