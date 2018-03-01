@@ -1113,8 +1113,14 @@ class VI(object):
         
     ##======utilities and bookeeping
     def rng_seed(self):
+        '''
+        sets (and resets) the seed for the random number generator
+        stores the seed as an attribute "randNumberSeed"
+        '''
+        ##if no seed yet, set one
         if not hasattr(self, 'randNumberSeed'):
             self.randNumberSeed = np.random.randint(0,high=10**4)
+        ##reset the seed so that subsequent calls to np.random.whatever replicate previous calls
         np.random.seed(self.randNumberSeed)
     
     def train_test_regularize_splits(self, trainTestSplit, trainRegSplit):
@@ -1204,8 +1210,9 @@ class VI(object):
         self.update_current(trainIdx)
         
         
+        
         if optimizeHyperParams:
-            ##collect the arguments for use in recursive call below
+            ##collect the arguments for use in recursive call below: isn't there a better way to do this?!?!?!
             allArgs = [initialNoisinessOfZ, pOnInit, pOffInit, noiseParamNumber, numStarterMaps, numSamples, maxIterations, trainTestSplit, trainRegSplit]
             
             ##initialize the ranges of hyperparameters
@@ -1222,14 +1229,8 @@ class VI(object):
                     ##recursively call run_VI, each time with a fixed set of hyperparams, avoiding the hyperparameter loop
                     _,numIters=self.run_VI(*allArgs, optimizeHyperParams=False)
                     self.numIters = numIters
-                    #self.store_learned_model()
-            #bestModel = self.optimize_hyper_parameters()
-            #bestModel.trainIdx = trainIdx
-            #bestModel.regIdx = regIdx
-            #bestModel.testIdx = testIdx
-            #return bestModel
         else:
-
+            
 
             ##--construct the lkhdCube and slice it at the discrete value of the noise params closest to the supplied init values
             noiseParamStarIdx = self.init_noiseParams(pOnInit, pOffInit, noiseParamNumber)
@@ -1308,9 +1309,10 @@ class VI(object):
 
                 iteration += 1
 
-            #return iteration
+            ##store the learned model--this just takes a snapshot and saves it. helpful for hyperpameter learning and for re-training
             self.store_learned_model()
-        bestModel = self.optimize_hyper_parameters() ##if optimizeHyperParams=False, this just returns the one trained model. otherwise it updates the current best.
+        ##if optimizeHyperParams=False, next line returns the one trained model. otherwise it updates the current best.
+        bestModel = self.optimize_hyper_parameters() 
         bestModel.trainIdx = trainIdx
         bestModel.regIdx = regIdx
         bestModel.testIdx = testIdx
@@ -1334,6 +1336,13 @@ def make_object_map_stack(K, num_rows, num_cols, image_dimensions,num_maps):
         tmp = np.eye(K)[tmp.ravel()-1].T  ##K x D
         object_maps[nm] = tmp
     return object_maps
+
+##percent correct on a model's (a vi object's) current response set
+def percent_correct(bestModel, M=100):
+    _,noiseParamStarIdx,_,_=bestModel.optimize_PStar(bestModel.bestQZ)
+    predict,_ = bestModel.update_log_predictive_distribution(bestModel.bestQZ, noiseParamStarIdx,numSamples=M)
+    pc,_=bestModel.update_percent_correct(predict)
+    return pc
 
 #===Antiquated: Big dumb function for importing data from first experiment. Will remove in later iterations.
 def open_imagery_probe_data(*args):
