@@ -322,40 +322,7 @@ class probes(object):
                 W[boxIndices]=1
             
         return W   
-        
-        
-        
-
-    #we don't have to use these windows, but we might as well.     
-    #def make_windows(self, makeWindows=False, stride = 1, sizes = [1], n_groups=7, group_order = 2):
-        #if makeWindows:
-            #Windows = []
-            #for sz in sizes:
-                #scale_count = 0
-                #for rows in np.arange(sz,D1,stride,dtype=int, ):
-                    #for cols in np.arange(sz,D2,stride,dtype=int):
-                        #one_win = np.zeros((D1,D2),dtype=floatX)
-                        #one_win[(rows-sz):(rows+sz), (cols-sz):(cols+sz)]=1
-                        #Windows.append(one_win)
-                        #scale_count +=1
-                #print scale_count
-
-
-            #N = len(Windows)
-            #n_groups *= D 
-            #W = np.zeros((N+n_groups,D),dtype=intX)
-            #for n in range(N):
-                #W[n,:] = Windows.pop().ravel()
-
-            #for n in range(N,N+n_groups):
-                #rand_pairs = np.random.permutation(N)[:group_order]
-                #W[n,:] = np.clip(np.sum(W[rand_pairs[0:group_order],:],axis=0), 0, 1)
-
-            #W = W[:(N+n_groups),:]
-
-
-            #N = W.shape[0]
-            #return W.astype(intX)
+    
     
 
 
@@ -1319,9 +1286,226 @@ class VI(object):
         return bestModel, iteration
         
 
+##===for analyzing the posterior distribution
+class comembership_analyzer(object):
+    def __init__(self, trainedModel, relax=True):
+        '''
+        comembership_analyzer(trainedModel, relax=True)
+        
+        some methods for analyzing the pairwise comembership properties of pixels under q(Z)
+        for a trained VI model
+        
+        initialization arguments:
+            trainedModel ~ a trained VI model
+            relax ~ true by default, this will replace all 0's in the qZ with tiny number, to keep analyses from
+                    exploding. ideally the prior on Z will be set so that we don't have to do this.
+        '''
+        #self.trainedModel = trainedModel
+        self.D1,self.D2 = (trainedModel.responses.Z.numPixels.D1, trainedModel.responses.Z.numPixels.D2)
+        self.D = self.D1*self.D2
+        self.K = trainedModel.responses.Z.categoryPrior.numObjects.K
+        #explicitly copy qZ of the trained model since we want to cast it and may otherwise fuck with it
+        self.qZ = copy.deepcopy(trainedModel.bestQZ.astype('float64'))
+        #by default we relax and renormalize to avoid having to deal with degenerate distributions
+        if relax:
+            self.relax_and_renormalize()
+        #finally, pre-calculate the probability under q of any two pixels belonging together...
+        self.qZComemProb = self.comembership_indicator(self.qZ.astype('float64'))
+        
+        ##want to copy ability to see samples: note this takes K x D, not 1 x K x D
+        self.view_sample = lambda x,y: trainedModel.responses.Z.view_sample(x[np.newaxis],show=y)
+        
+        ##and copy ability to produce samples: 
+        self.sample = lambda m: trainedModel.responses.Z.sample(M=m,pZ=self.qZ.astype('float32'))
+        
+    
+    def relax_and_renormalize(self, fudge=10e-16):
+        '''
+        relax_and_renormalize(fudge=10e-16)
+        sometimes the model is just too good (or bad) and learns degenerate distributions
+        for one or more pixels. this can make analyses really painful. so here we find all pixels
+        with degenerate distributions and relax them by adding a small non-zero probability where needed,
+        then renormalize
+    
+        '''
+        
+#         self.qZ = np.where(self.qZ <= tooSmall, self.qZ+fudge, self.qZ)
+        self.qZ = np.clip(self.qZ, fudge, 1)
+        self.qZ /= np.sum(self.qZ, axis=0)
+        if not np.all(np.abs(np.sum(self.qZ,axis=0)-1.0) < fudge):
+            self.relax_and_renormalize(fudge = fudge*10)
+        if not np.all(np.abs(np.sum(self.qZ.astype('float32'),axis=0)-1.0) < np.sqrt(fudge)):
+            self.relax_and_renormalize(fudge = fudge*10)
+        
+        print 'relaxation fudge factor: %e' %(fudge)
+
+    def comembership_indicator(self, objectMap):
+        '''
+        comembership_indicator(objectMap)
+        inputs:
+            objectMap ~ K x D
+        outputs:
+            a D x D matrix of comembership indicators
+            ie, 0 or 1 for each pair of pixels that don't/do belong to same object
+        '''
+#         ##only makes sense if given a legit objectMap, so check first
+#         assert(np.sum(np.sum(objectMap))==self.D)
+        return objectMap.T.dot(objectMap)
+    
+    def sample_object_maps_with_known_object(self, knownPixels=None, M=1):
+        '''
+        sample_object_maps_with_known_object(knownPixels=None, M=1)
+        produces M samples from q(Z) given that knownPixels all belong to same object
+        and no other pixels belong to that object
+        
+        inputs:
+            knownPixels ~ list of pixel indices (into the K x D object maps). or a list of lists.
+        
+        outputs:
+            M x K x D array of samples from q(Z) given that knowPixels all belong to same object
+            
+        '''
+        ##initialize object map sample array
+        objectMaps = np.zeros((M,self.K,self.D)).astype('int64')
+        
+        if knownPixels is None:
+            return self.sample(M)
+           
+        ##get indices for unknown pixels
+        unknownPixels = range(self.D)
+        [unknownPixels.remove(pix) for pix in knownPixels]
+        #get probability that the known pixels belong to object k
+        unnorm = np.exp(np.sum(np.log(self.qZ[:,knownPixels]),axis=1))
+        prob_of_k = np.exp(np.log(unnorm)-np.log(np.sum(unnorm)))
+        #sample an object from that distribution
+        selected_objects = np.random.multinomial(1,prob_of_k,size=M).astype('bool')
+        ##loop over all samples
+        for m,k in zip(range(M),selected_objects):
+            #assign known pixels to that row in the object map
+            theObject = np.arange(self.K)[k]
+            img,row,col = np.meshgrid(m, theObject, knownPixels)
+            objectMaps[[img,row,col]] = 1
+            ##now deal with the rest of the objects/pixels
+            notTheObject = np.arange(self.K)[~k]
+            #normalize probabilities for the rest of the pixels
+            prob_of_not_k = 1-self.qZ[theObject][:,unknownPixels]
+            qZNormalized = (self.qZ[notTheObject][:,unknownPixels])/(prob_of_not_k.reshape((1,len(unknownPixels))))
+
+            #sample labels for those pixels.
+            labels = np.array(map(lambda pval: np.random.multinomial(1, pval), qZNormalized.T)).T
+            ##assign labels to remaining pixels
+            img,row,col = np.meshgrid(m, notTheObject, unknownPixels)
+            if labels.size:
+                objectMaps[[img,row,col]] = labels[:,np.newaxis,:]
+            
+        return objectMaps
+    
+    def log_prob_comembership_indicator(self, objectMap):
+        '''
+        log_prob_comembership_indicator(objectMap)
+        returns the log probability of the comembership indicator matrix
+        of the input objectMap
+        
+        inputs:
+            objectMap ~ K x D
+        outputs:
+            logProb ~ scalar
+        '''
+        
+        
+#         small = 10e-16
+#         big = 1-small        
+        C = self.qZComemProb
+        logC = np.log(C)
+        logOneMinusC = np.log(1-C)
+        cmi = self.comembership_indicator(objectMap).astype('float64')
+        logProb = np.sum(np.sum(np.triu(cmi*logC+(1-cmi)*logOneMinusC,1)))
+        return logProb
+    
+    def entropy(self, M=0):
+        '''
+        entropy(M=0)
+        by default, rurns analytical entropy of qZ
+        if M > 0, estimates entropy by calculating expected_log_prob_comembership across M samples
+        '''
+        if M:
+            negentropy,_,_=self.expected_log_prob_comembership(M=M)
+        else:
+            negentropy = self.log_prob_comembership_indicator(self.qZ)
+        return -negentropy
+
+    def expected_log_prob_comembership(self,knownPixels = None, M = 100):
+        '''
+        expected_log_prob_comembership(knownPixels = None, M = 100)
+        samples M object maps from q(Z) assuming that all pixels in "knownPixels" belong to the
+        same object. computes the expected log prob of comembership across these samples.
+        
+        note: if no knownPixels, this should approximate -H(q(Z))
+        
+        inputs:
+            knownPixels ~ a list of integers (I think booleans will work too) indices
+            M ~ number of samples for computed expectation
+        outputs:
+            expected log prob ~ scalar, arithmetic mean of log comembership probability across all M samples
+            logProbs ~ list of logProbs for each individual sample
+            samples ~ list of sampled object maps used to compute expectation
+        '''
+#         if knownPixels is None:
+#             return -self.entropy
+#         else:
+        s = self.sample_object_maps_with_known_object(knownPixels, M=M)
+        logProbs = map(self.log_prob_comembership_indicator, s)
+        return np.mean(logProbs), logProbs, s
+        
+    def optimize_object_scale(self, knownPixels, M=100, selem=None):
+        originalObjectMask = np.zeros(self.D)
+        originalObjectMask[knownPixels]=1
+        originalObjectMask = originalObjectMask.reshape((self.D1,self.D2))
+        rescaledObjectMasks = recursively_rescale_object(originalObjectMask,selem=selem) ## a list of eroded/dilated objects, original in the middle
+        expected_log_probs = np.zeros(len(rescaledObjectMasks))
+        for i,objectMask in enumerate(rescaledObjectMasks):
+            pixelIdx = np.where(objectMask.flatten())[0]
+            explp,_,_ = self.expected_log_prob_comembership(pixelIdx, M=M)
+            expected_log_probs[i] = explp
+        return expected_log_probs, rescaledObjectMasks
+    
+    def posterior_image_identification(self, candidateObjectMapStack):
+        '''
+        posterior_image_identification(lureObjectMapStack)
+        take a stack of "lure" object maps, compute log prob. of comembership for each,
+        return, along with index of highest log. prob. if "real" object map is in the stack,
+        this can be used for image identification
+        '''
+        ##big nasty loop
+        N = candidateObjectMapStack.shape[0]
+        logProbs = np.zeros(N)
+        for i,objectMap in enumerate(candidateObjectMapStack):    
+            logProbs[i]=self.log_prob_comembership_indicator(objectMap)
+        return logProbs, np.argmax(logProbs)
+    
+    def kl_divergence(self, pZ, M=100):
+        '''
+        kl_divergence(pZ)
+        returns KL(q | p), the kullback-lieber divergence between q(Z) and comparison_distribution p(Z)
+        uses the comemberhsip probability because object identities in q and p will not mean the same thing in general.
+        however, this only produces meaningful estimates if q and p have the same support.
+        
+        inputs:
+            pZ ~ a K x D distribution
+            Note: we don't do 
+        '''
+        p = pZ.T.dot(pZ).astype('float64')
+        q = self.qZComemProb
+        
+        crossentropy = np.sum(np.sum(np.triu(-q*np.log(p) - (1-q)*np.log(1-p),1)))
+        return crossentropy - self.entropy()
+
+    
+
+        
 
 
-#===utiliity
+#=======================================================utilities========================================================================
 ##for generating stacks of one-hot-encoded object maps. these are "special" smooth maps
 def make_object_map_stack(K, num_rows, num_cols, image_dimensions,num_maps):
     size_of_field = int(np.mean(image_dimensions))
@@ -1344,86 +1528,28 @@ def percent_correct(bestModel, M=100):
     pc,_=bestModel.update_percent_correct(predict)
     return pc
 
-#===Antiquated: Big dumb function for importing data from first experiment. Will remove in later iterations.
-def open_imagery_probe_data(*args):
+##makes a list of bigger/small versions of an object mask. for interpreting qZ
+def recursively_rescale_object(objectMask,selem=None):
+    from skimage.morphology import binary_dilation, binary_erosion
     '''
-    open_imagery_probe_data() returns a pandas dataframe with lots of info
-    
-    or
-    
-    open_imagery_probe_data(subject, state, targetImage) accesses the dataframe and gets the stuff you want
-    
-    
-    
+    recursively_rescale_object(objectMask,selem=np.ones((2,2)))
+    makes of list of rescaled objects from very tiny to very big
+    objectMask is a binary matrix in "canonical" format (i.e., rows x cols image)
     '''
-    ##which repo?
-    drive = '/mnt/fast/'
-
-    ##base directory
-    base = 'multi_poly_probes'
-
-    ##pandas dataframe with all the experimental conditions and data
-    data_place = 'data'
-    data_file = 'multi_poly_probe_data_3_subjects.pkl'
-
-    ##open experimental data: this is a pandas dataframe
-    experiment = pd.read_pickle(join(drive, base, data_place, data_file))
-    if not args:
-        return experiment
-    else:
-        subject = args[0]
-        state = args[1]
-        targetImageName = args[2]
-        ##target images
-        image_place = 'target_images'
-        mask_place = 'masks'
-
-        target_image_file = targetImageName+'_letterbox.png'
-        mask_image_file = targetImageName+'_mask.tif'
-
-        ##window files
-        window_place = 'probes'
-        window_file = targetImageName+'_letterbox_img__probe_dict.pkl'
-
-        ##open target image/object map: useful as a guide
-        targetImage = open(join(drive, base, image_place, target_image_file),mode='r').convert('L')
-
-        ##open
-        targetObjectMap = open(join(drive, base, mask_place, mask_image_file),mode='r').convert('L')
-
-
-        ##get the responses you want
-        ##responses of select subject / target image / cognitive state
-        resp = experiment[(experiment['image']==targetImageName) * (experiment['subj']==subject) * (experiment['state']==state)].response.values
-
-        ##run a nan check--who knew there would be nans in this data?
-        nanIdx = ~np.isnan(resp)
-        resp = resp[nanIdx]
-        if any(~nanIdx):
-            print 'killed some nans'
-        
-        ##give it dimensions
-        resp = resp[np.newaxis,:]
-        
-        ##corresponding window indices
-        windowIdx = experiment[(experiment['image']==targetImageName) * (experiment['subj']==subject) * (experiment['state']==state)].probe.values
-
-        ##open the windows. creates a dictionary with "index/mask" keys. this usually takes a while
-        windows = pd.read_pickle(join(drive, base, window_place, window_file)) ##N x D1Prime x D2Prime
-        N = len(windows['index'])
-        window_shape = windows['mask'][0].shape
-        W = np.zeros((N,window_shape[0],window_shape[1]),dtype=floatX)
-
-
-        ##correctly order and reformat
-        for ii,w in enumerate(windowIdx):
-            str_dx = map(int, w.split('_'))
-            dx = windows['index'].index(str_dx)
-            W[ii] = windows['mask'][dx].clip(0,1)
-            
-        ##run another nan check
-        W = W[nanIdx]
-
-        return W, resp, experiment, targetObjectMap,targetImage
+    def recurse(objectMask,thresh_func, warp_func):
+        objectMask = warp_func(objectMask,selem)
+        if thresh_func(objectMask):
+            return [objectMask]+recurse(objectMask, thresh_func, warp_func)
+        return []
+    #shrink
+    warp_func = binary_erosion
+    thresh_func = np.sum
+    shrunk = recurse(objectMask,thresh_func, warp_func)
     
+    #dilate
+    warp_func = binary_dilation
+    thresh_func = lambda x: np.sum(x) < objectMask.size
+    dilated = recurse(objectMask,thresh_func, warp_func)
+    
+    return list(reversed(shrunk))+[objectMask]+dilated
 
