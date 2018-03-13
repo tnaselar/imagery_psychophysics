@@ -2,6 +2,13 @@ import numpy as np
 import pandas as pd
 import copy
 from os.path import join
+from PIL.Image import open as open_image
+from PIL import Image
+
+##data types
+floatX = 'float32'
+intX = 'int32'
+
 #Big dumb function for importing data from first experiment. Will remove in later iterations.
 def open_imagery_probe_data(*args):
     '''
@@ -44,10 +51,10 @@ def open_imagery_probe_data(*args):
         window_file = targetImageName+'_letterbox_img__probe_dict.pkl'
 
         ##open target image/object map: useful as a guide
-        targetImage = open(join(drive, base, image_place, target_image_file),mode='r').convert('L')
+        targetImage = open_image(join(drive, base, image_place, target_image_file),mode='r').convert('L')
 
         ##open
-        targetObjectMap = open(join(drive, base, mask_place, mask_image_file),mode='r').convert('L')
+        targetObjectMap = open_image(join(drive, base, mask_place, mask_image_file),mode='r').convert('L')
 
 
         ##get the responses you want

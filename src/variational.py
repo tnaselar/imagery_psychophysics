@@ -1469,6 +1469,20 @@ class comembership_analyzer(object):
             expected_log_probs[i] = explp
         return expected_log_probs, rescaledObjectMasks
     
+    
+    def optimize_object_location(self, knownPixels, M = 100):
+        originalObjectMask = np.zeros(self.D)
+        originalObjectMask[knownPixels]=1
+        originalObjectMask = originalObjectMask.reshape((self.D1,self.D2))
+        translatedObjectMasks = move_object_to(originalObjectMask)
+        expected_log_probs = np.zeros((self.D1,self.D2)) ##"it is known"
+        for d1 in range(self.D1):
+            for d2 in range(self.D2):
+                pixelIdx = np.where(translatedObjectMasks[d1,d2,:,:].flatten())[0]
+                explp,_,_ = self.expected_log_prob_comembership(pixelIdx, M=M)
+                expected_log_probs[d1,d2] = explp
+        return expected_log_probs, translatedObjectMasks
+    
     def posterior_image_identification(self, candidateObjectMapStack):
         '''
         posterior_image_identification(lureObjectMapStack)
@@ -1553,3 +1567,27 @@ def recursively_rescale_object(objectMask,selem=None):
     
     return list(reversed(shrunk))+[objectMask]+dilated
 
+def move_object_to(objectMask,distance=None):
+    from scipy.ndimage.measurements import center_of_mass
+    from skimage.transform import AffineTransform, warp
+    '''
+    move_object_to(objectMask,distance=None)
+    create a copy of the object centered at each pixel in the original mask
+    So, if there are D pixels, this will return D object masks with the object translated to each of D positions.
+    If distance = n, will only return positions that are  >= n pixels away in either x or y direction.
+    Inputs:
+        objectMask ~ D1 x D2 binary matrix (a proper image of the object mask)
+        distance ~ integer, default is none. restrict translation to this many pixels
+    
+    '''
+    D1,D2 = objectMask.shape
+#     objectCenterOfMass = center_of_mass(objectMask)
+    fieldCenterOfMass = np.array(center_of_mass(np.ones((D1,D2))))
+    masks = np.zeros((D1,D2,D1,D2))
+    for d1 in range(D1):
+        for d2 in range(D2):
+            translation = fieldCenterOfMass - np.array([d1,d2])
+#             translation = objectCenterOfMass - np.array([d1,d2])
+            xform = AffineTransform(translation = translation)
+            masks[d1,d2,:,:] = warp(objectMask,xform.params,order=0, preserve_range=True,clip=True)
+    return masks
