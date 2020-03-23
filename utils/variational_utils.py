@@ -29,7 +29,7 @@ def open_imagery_probe_data(*args):
 
     ##pandas dataframe with all the experimental conditions and data
     data_place = 'data'
-    data_file = 'multi_poly_probe_data_3_subjects.pkl'
+    data_file = 'multi_poly_probe_data_5_subjects.pkl'
 
     ##open experimental data: this is a pandas dataframe
     experiment = pd.read_pickle(join(drive, base, data_place, data_file))

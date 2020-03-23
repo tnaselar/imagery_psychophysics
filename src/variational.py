@@ -140,7 +140,7 @@ class latentObjMap(object):
         _M = T.scalar('M',dtype='int32') ##number of samples
         _D = self.numPixels._D
         _K = self.categoryPrior.numObjects._K
-        _pZ = T.matrix('pZ') ##(K x D) prior
+        _pZ = T.matrix('pZ') ##(K x D) prior or variational posterior
         
         ##this will be an M x K x D int32 tensor
         _sampleZ = rng.multinomial(pvals = repeat(_pZ.T,_M,axis=0)).reshape((_D,_M,_K)).dimshuffle((1,2,0))
@@ -260,7 +260,7 @@ class probes(object):
         
         none of this is guaranteed to work unless all dimensions are powers of 2
         
-        this method is stupid and I hate it. For some reason it make blank windows sometimes. fuck it.
+        this method is stupid and I hate it. For some reason it makes blank windows sometimes. fuck it.
         
         inputs:
             shape ~ the shape of target image the windows will mask. this is referred to as (D1', D2') below
@@ -592,7 +592,7 @@ class responses(object):
 
 #=======Classes for performing variational inference
 
-#Inferring the variational posterior over object maps
+#Inferring the variational posterior over object maps: this actually works for any discrete variable Z
 class inferQZ(object):
     def __init__(self):
         self.compile_updater()
@@ -677,7 +677,8 @@ class inferQPi(object):
 
 # The VI class coordinates the learning procedures for $q(Z)$, $q(\pi)$, noiseparams
 # 
-# *Nasty book-keeping note*: counts, responses, and object id's are often converted to indices, or to 1hot formats.
+# *Tricky book-keeping note*: counts, responses, and object id's are often converted to indices, or to 1hot formats.
+# 
 # To convert counts to indices we need to subtract 1, because counts always range from 1 to K (inclusive),
 # whereas indices range from 0 to K-1.
 # 
@@ -1183,19 +1184,19 @@ class VI(object):
             allArgs = [initialNoisinessOfZ, pOnInit, pOffInit, noiseParamNumber, numStarterMaps, numSamples, maxIterations, trainTestSplit, trainRegSplit]
             
             ##initialize the ranges of hyperparameters
-            #self.init_probesnumber_of_objects_range(numOverMin=objectNumOverMin)
-            self.init_pixel_resolution_range(numOverMin=pixelNumOverMin)
+            self.init_number_of_objects_range(numOverMin=objectNumOverMin)
+#             self.init_pixel_resolution_range(numOverMin=pixelNumOverMin)
             
             ##run vi in a loop over hyperparameters
             for k in self.numberOfObjectsRange:
                 self.responses.Z.categoryPrior.numObjects.set_value(k)
                 print '--------number of objects: %d------------' %(self.responses.Z.categoryPrior.numObjects.K)
-                for d1,d2 in self.pixelResolutionRange:
-                    self.responses.Z.numPixels.set_value(d1,d2)
-                    print '--------image resolution: (%d,%d,%d)------------' %(self.responses.Z.numPixels.D1,self.responses.Z.numPixels.D2,self.responses.Z.numPixels.D)
+#                 for d1,d2 in self.pixelResolutionRange:
+#                     self.responses.Z.numPixels.set_value(d1,d2)
+#                     print '--------image resolution: (%d,%d,%d)------------' %(self.responses.Z.numPixels.D1,self.responses.Z.numPixels.D2,self.responses.Z.numPixels.D)
                     ##recursively call run_VI, each time with a fixed set of hyperparams, avoiding the hyperparameter loop
-                    _,numIters=self.run_VI(*allArgs, optimizeHyperParams=False)
-                    self.numIters = numIters
+                _,iteration=self.run_VI(*allArgs, optimizeHyperParams=False)
+                self.numIters = iteration
         else:
             
 
@@ -1246,7 +1247,7 @@ class VI(object):
 
             iteration += 1
 
-
+            ##this is the heart of the algorithm where the posteriors are updated
             while (delta_ELBO > min_delta_ELBO) and (iteration <= maxIterations):
 
                 ##put lkhd in log domain
